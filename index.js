@@ -6,36 +6,40 @@ var AdmZip = require('adm-zip')
 const uuidv4 = require('uuid/v4');
 var recursive = require('recursive-readdir')
 // var debounce = require('lodash.debounce')
-const materials = '/Users/juandaniel/Code/arasaac-watcher/materials'
+require('dotenv').config()
+// const materials = '/Users/juandaniel/Code/arasaac-watcher/materials'
 const _ = require ('lodash')
+const materials = process.env.MATERIALS
 var watcher = chokidar.watch(materials, {
   ignored: [/(^|[\/\\])\../, '**/screenshots_*', /index-..-(\{){0,1}[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}(\}){0,1}.zip/],
   ignoreInitial: true,
-  cwd: materials,
-  awaitWriteFinish: {
-    stabilityThreshold: 2000,
-    pollInterval: 100
-  }
+  cwd: materials
 });
 
+
+var materialFiles = {}
+// regex for screenshots dir
+var expresion = /screenshots\/$/
+const INCLUDE = 'include'
+const EXCLUDE = 'exclude'
 
 // Something to use when events are received.
 var log = console.log.bind(console)
 // Add event listeners.
 watcher
   // .on('addDir', path => log(`Directory ${path} has been added`))
-  .on('add', (path) => {
-    log(`ADDED FILE: ${path}`)
-    includeFiles(path)
+  .on('add', (file) => {
+    log(`ADDED FILE: ${file}`)
+    addTask(file, INCLUDE)
   })
-  .on('change', (path) => {
-    log(`CHANGED FILE: ${path}`)
-    excludeFiles(path) // we remove it and then we add it
-    includeFiles(path)
+  .on('change', (file) => {
+    log(`CHANGED FILE: ${file}`)
+    addTask(file, EXCLUDE) // we remove it and then we add it
+    addTask(file, INCLUDE)
   })
   .on('unlink', (path) => {
     log(`REMOVED FILE: ${path}`)
-    excludeFiles(path)
+    addTask(file, EXCLUDE)
   })
   .on('error', error => log(`WATCHER ERROR: ${error}`))
   .on('ready', () => {
@@ -43,59 +47,79 @@ watcher
     log('*******Initial scan complete. Ready for changes********')
   });
 
-var materialFiles = {}
 
-const includeFiles = (file) =>{
-  let materialId = path.dirname(file).split(path.sep)[0]
-  // if not initialized, we do it before pushing data 
-  materialFiles[materialId] = materialFiles[materialId] || {
+
+const initMaterial = (materialId) => {
+  let languages = dirs(path.resolve(materials, materialId))
+  materialFiles[materialId] = {
     materialId,
     include: [],
     exclude: [],
     includeScreenshots: [],
-    excludeScreenshots: []
+    excludeScreenshots: [],
+    languages: new Set([languages])
   }
-  let expresion = /screenshots\/$/
-  let isScreenshot = file.match(expresion)
-  if (isScreenshot) materialFiles[materialId].includeScreenshots.push(file)
-  else materialFiles[materialId].include.push(file)
+}
+
+
+const includeFiles = (file, operation) =>{
+  let materialId = path.dirname(file).split(path.sep)[0]
+  // if not initialized, we do it before pushing data
+  if (!materialFiles[materialId]) initMaterial(materialId)
+  // depending on material type we add where it should be
+  if (file.match(expresion)) materialFiles[materialId][`${operation}Screenshots`].push(file)
+  else {
+    let material = materialFiles[materialId]
+    material[operation].push(file)
+    let dir = path.dirname(file)
+    let dirName = dir.split(path.sep).pop()
+    let parentDir = path.resolve(dir, '..')
+    let parentDirName = parentDir.split(path.sep).pop()
+    if (dirName == materialId) material.files.push({file, languages: material.languages})
+    
+    else if (parentDirName == materialId) materialFiles[materialId].targetLanguages.add(dirName) //dirName should be the language
+    else console.log(`File ${file} added, but not executing any action!`)
   operateDebounced(materialFiles[materialId])
 }
 
+/*
 const operate = (materialFiles) =>
 {
   console.log('files to add:')
   materialFiles.include.map((file)=>console.log (file))
   materialFiles.include=[]
 }
-
-
-const excludeFiles = (file) => {
-  let materialId = path.dirname(file).split(path.sep)[0]
-  // if not initialized, we do it before pushing data 
-  materialFiles[materialId] = materialFiles[materialId] || {
-    materialId,
-    include: [],
-    exclude: [],
-    includeScreenshots: [],
-    excludeScreenshots: []
-  }
-  let expresion = /screenshots\/$/
-  let isScreenshot = dir.match(file)
-  if (isScreenshot) materialFiles[materialId].excludeScreenshots.push(file)
-  else materialFiles[materialId].exclude.push(file)
-  return file
-}
-
+*/
 
 // https://stackoverflow.com/questions/28787436/debounce-a-function-with-argument
 var operateDebounced = _.wrap(
-  _.memoize(() => _.debounce(operate, wait=20000), _.property('materialId')), 
+  _.memoize(() => _.debounce(sync, wait=process.env.TIME), _.property('materialId')), 
   (func, obj) => func(obj)(obj)
 )
 
-addOperation = (material) => {
+sync = (material, languages) => {
   // depending in where the file is added we will generate images or zip files:
+  material.excludeScreenshots.map((file)=> {
+    file.replace('screenshots', `_${process.env.RESOLUTION}`)
+    // delete the file from screenshots)
+    fs.remove(path.resolve(materials, file), err => {
+      if (err) console.error(err)
+      else console.log(`REMOVE FILE: ${file}`)
+    })
+  })
+
+  material.exclude.map((file)=>
+    let relativeDir = path.dirname(file)
+    let dir = `${materials}/${relativeDir}`
+    let dirName = dir.split(path.sep).pop()
+    let parentDir = path.resolve(dir, '..')
+    let parentDirName = parentDir.split(path.sep).pop()
+    let materialId = path.dirname(file).split(path.sep)[0]
+
+)
+
+
+
   console.log (`File ${file} has been added`)
   let relativeDir = path.dirname(file)
   let dir = `${materials}/${relativeDir}`
@@ -103,11 +127,10 @@ addOperation = (material) => {
   let parentDir = path.resolve(dir, '..')
   let parentDirName = parentDir.split(path.sep).pop()
   let materialId = path.dirname(file).split(path.sep)[0]
-  let expresion = /screenshots$/
-  let isScreenshot = dir.match(expresion)
-  if (isScreenshot) { 
-    resizeImages(file, materialId, 300)
-  } else if (dirName == materialId) {
+
+
+    
+  else if (dirName == materialId) {
     // if file is in the root folder we need to modify zip for all languages:
     let languages = dirs(dir)
     if (languages.length) languages.map((language) => addFileToZip(materialId, path.resolve(materials, file), language))
