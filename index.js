@@ -36,21 +36,21 @@ var log = console.log.bind(console)
 watcher
   // .on('addDir', path => log(`Directory ${path} has been added`))
   .on('add', (file) => {
-    log(`WATCHER - ADDED FILE: ${MATERIALS}${file}`)
+    log(`WATCHER - ADDED FILE: ${path.resolve(MATERIALS, file)}`)
     addFile(file, INCLUDE)
   })
   .on('change', (file) => {
-    log(`WATCHER - CHANGED FILE: ${MATERIALS}${file}`)
+    log(`WATCHER - CHANGED FILE: ${path.resolve(MATERIALS, file)}`)
     addFile(file, EXCLUDE) // we remove it and then we add it
     addFile(file, INCLUDE)
   })
   .on('unlink', (file) => {
-    log(`WATCHER - REMOVED FILE: ${MATERIALS}${file}`)
+    log(`WATCHER - REMOVED FILE: ${path.resolve(MATERIALS, file)}`)
     addFile(file, EXCLUDE)
   })
   .on('error', error => log(`WATCHER ERROR: ${error}`))
   .on('ready', () => {
-    log('*******As there can be many changes on each material, it will wait 30 seconds on every material before starting processing it******')
+    log(`*******As there can be many changes on each material, it will wait ${parseInt(TIME)/1000} seconds on every material before starting processing it******`)
     log('*******Initial scan complete. Ready for changes********')
   })
 
@@ -130,7 +130,7 @@ sync = (material, languages) => {
   )
 
   // zip files 
-  if (!isEmpty(fileList)) zipFiles (fileList, material.idMaterial)
+  if (!isEmpty(fileList)) zipFiles (fileList, material.materialId)
 
   // reset materialId
   initMaterial(material.materialId)
@@ -142,23 +142,28 @@ const zipFiles = async (fileList, materialId) => {
     let zipFiles = await getZipFiles(materialId)
     for (const [language, files] of Object.entries(fileList)) {
       // zip file for key language
-      let languageZipfiles = getZipFile(language, zipFiles)
+      let languageZipFiles = getZipFile(language, zipFiles)
+      let newZip = path.resolve(MATERIALS, materialId, `index-${language}-${uuidv4()}.zip`)
       let memZip
       switch (languageZipFiles.length) {
         case 0:
           // new zip file
           // as zip is not yet created, we don't take into account exclude files though they shouldn't exist!
-          let newZip = path.resolve(MATERIALS, materialId, `index-${language}-${uuidv4()}.zip`)
           memZip = new AdmZip()
-          files.include.map((file) => memZip.addLocalFile(file))
+          files.include.map((file) => memZip.addLocalFile(path.resolve(MATERIALS,file)))
           memZip.writeZip(newZip)
           break;
         case 1:
           // we make a new zip file with this value
-          let oldZip = path.resolve(MATERIALS, materialId, languageZipfiles[0])
+          let oldZip = path.resolve(MATERIALS, materialId, languageZipFiles[0])
           memZip = new AdmZip(oldZip)
-          files.exclude.map((file) => memZip.deleteFile(file))
-          files.include.map((file) => memZip.addLocalFile(file))
+          files.exclude.map((file) => memZip.deleteFile(path.resolve(MATERIALS,file)))
+          files.include.map((file) => {
+            memZip.addLocalFile(path.resolve(MATERIALS,file))
+            console.log(file)
+            console.log(path.resolve(MATERIALS,file))
+          })
+          
           memZip.writeZip;
           await fs.move(oldZip, newZip)
           break;
