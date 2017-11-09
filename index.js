@@ -2,9 +2,9 @@
 var chokidar = require('chokidar')
 var fs = require('fs-extra')
 var path = require('path')
-var AdmZip = require('adm-zip')
 const uuidv4 = require('uuid/v4');
 var recursive = require('recursive-readdir')
+var tar = require('tar')
 const _ = require ('lodash')
 var sharp = require('sharp')
 
@@ -37,16 +37,15 @@ watcher
   // .on('addDir', path => log(`Directory ${path} has been added`))
   .on('add', (file) => {
     log(`WATCHER - ADDED FILE: ${path.resolve(MATERIALS, file)}`)
-    addFile(file, INCLUDE)
+    addTask(file, 'INCLUDE')
   })
   .on('change', (file) => {
     log(`WATCHER - CHANGED FILE: ${path.resolve(MATERIALS, file)}`)
-    addFile(file, EXCLUDE) // we remove it and then we add it
-    addFile(file, INCLUDE)
+    addTask(file, 'INCLUDE')
   })
   .on('unlink', (file) => {
     log(`WATCHER - REMOVED FILE: ${path.resolve(MATERIALS, file)}`)
-    addFile(file, EXCLUDE)
+    addTask(file, 'EXCLUDE')
   })
   .on('error', error => log(`WATCHER ERROR: ${error}`))
   .on('ready', () => {
@@ -54,43 +53,37 @@ watcher
     log('*******Initial scan complete. Ready for changes********')
   })
 
-
-
 const initMaterial = (materialId) => {
   let languages = dirs(path.resolve(MATERIALS, materialId))
   materialFiles[materialId] = {
     materialId,
-    include: [],
-    exclude: [],
     includeScreenshots: [],
     excludeScreenshots: [],
-    languages: new Set(languages)
+    languages: new Set(),
+    targetLanguages: new Set()
   }
 }
 
 const dirs = p => fs.readdirSync(p).filter(f => fs.statSync(path.join(p, f)).isDirectory() && f.match(/^[A-z]{2,3}$/))
 
-const addFile = (file, operation) =>{
+const addTask = (file, operation) =>{
   let materialId = path.dirname(file).split(path.sep)[0]
   // if not initialized, we do it before pushing data
   if (!materialFiles[materialId]) initMaterial(materialId)
+  let material = materialFiles[materialId]
   // depending on material type we add where it should be
-  if (file.match(expresion)) materialFiles[materialId][`${operation}Screenshots`].push(file)
+  if (file.match(expresion)) material[`${operation}Screenshots`].push(file)
   else {
-    let material = materialFiles[materialId]
     let dir = path.dirname(path.resolve(MATERIALS, file))
     let dirName = dir.split(path.sep).pop()
     let parentDir = path.resolve(dir, '..')
     let parentDirName = parentDir.split(path.sep).pop()
     if (dirName == materialId) {
-      material[operation].push({file, languages: material.languages})
-      operateDebounced(materialFiles[materialId])
-    } else if (dirName == 'screenshots') {
-      material[`${operation}Screenshots`].push(file) 
-      operateDebounced(materialFiles[materialId])
+      material.targetLanguages = material.Languages
+      operateDebounced(material)
     } else if (parentDirName == materialId) {
-      material[operation].push({file, languages: dirName}) //dirName should be the language
-      operateDebounced(materialFiles[materialId])  
+      material.targetLanguages.add(dirName) //dirName should be the language
+      operateDebounced(material])  
     } else console.log(`File ${file} added, but not executing any action!`)
   }
 }
@@ -101,7 +94,7 @@ var operateDebounced = _.wrap(
   (func, obj) => func(obj)(obj)
 )
 
-sync = (material, languages) => {
+sync = (material) => {
   // remove files from screenshosts_300
   material.excludeScreenshots.map((file) => {
     file.replace('screenshots', `_${RESOLUTION}`)
@@ -114,69 +107,29 @@ sync = (material, languages) => {
   // add screenshots to screenshots_300
   material.includeScreenshots.map((file) => resizeImage (file, material.materialId, RESOLUTION))
 
-  // make a fileList per language
-  let fileList = {}
-  material.include.forEach( (item)=>
-    item.languages.forEach( (language)=> {
-      if (!fileList[language]) fileList[language]={include: [], exclude: []}
-      fileList[language].include.push(item.file)
-    })
-  )
-  material.exclude.forEach( (item)=>
-    item.languages.forEach( (language)=> {
-      if (!fileList[language]) fileList[language]={include: [], exclude: []}
-      fileList[language].exclude.push(item.file)
-    })
-  )
-
   // zip files 
-  if (!isEmpty(fileList)) zipFiles (fileList, material.materialId)
+  if (!isEmpty(material.targetLanguages)) zipFiles (material.materialId)
 
   // reset materialId
   initMaterial(material.materialId)
 }
 
-const zipFiles = async (fileList, materialId) => {
+const zipFiles = async (material) => {
   // get all the ZipFiles per language
   try {
-    let zipFiles = await getZipFiles(materialId)
-    for (const [language, files] of Object.entries(fileList)) {
-      // zip file for key language
+    let zipFiles = await getZipFiles(material.materialId)
+    material.targetLanguages.forEach((language) => {
       let languageZipFiles = getZipFile(language, zipFiles)
+      languageZipFiles.forEach((file)=> await fs.delete(oldZip, newZip))
       let newZip = path.resolve(MATERIALS, materialId, `index-${language}-${uuidv4()}.zip`)
-      let memZip
-      switch (languageZipFiles.length) {
-        case 0:
-          // new zip file
-          // as zip is not yet created, we don't take into account exclude files though they shouldn't exist!
-          memZip = new AdmZip()
-          files.include.map((file) => memZip.addLocalFile(path.resolve(MATERIALS,file)))
-          memZip.writeZip(newZip)
-          break;
-        case 1:
-          // we make a new zip file with this value
-          let oldZip = path.resolve(MATERIALS, materialId, languageZipFiles[0])
-          memZip = new AdmZip(oldZip)
-          files.exclude.map((file) => memZip.deleteFile(path.resolve(MATERIALS,file)))
-          files.include.map((file) => {
-            memZip.addLocalFile(path.resolve(MATERIALS,file))
-            console.log(file)
-            console.log(path.resolve(MATERIALS,file))
-          })
-          
-          memZip.writeZip;
-          await fs.move(oldZip, newZip)
-          break;
-        default:
-          throw new Error(`Found more than one zip file for language ${language} in materials ${materialId} folder`);
-      }
-    }
-    //should be just one file!
+      let files = fs.readdirSync(path.resolve(MATERIALS, material.materialId)).filter((file)=>!fs.lstatSync(file).isDirectory())
+      let files2 = files.map((file)=>path.basename(file))
+      return tar.c({gzip: true, file: newZip, cwd: MATERIALS}, [...files2, language])
+    })
   } catch (error) {
     console.error(error);
   }
 }
-
 
 const resizeImage = (file, materialId, size) => {
   let extension = path.extname(file)
