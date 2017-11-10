@@ -67,7 +67,11 @@ const initMaterial = (materialId) => {
 }
 
 const dirs = p => fs.readdirSync(p).filter(f => fs.statSync(path.join(p, f)).isDirectory() && f.match(/^[A-z]{2,3}$/))
-const listFiles = p => fs.readdirSync(p).filter(f => !fs.statSync(path.join(p, f)).isDirectory())
+// list files, not directories, not tgz.
+const listFiles = p => fs.readdirSync(p).filter(f => {
+  let filePattern = new RegExp(`^index-..-[0-9A-F]{8}-[0-9A-F]{4}-[4][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}.tgz$`, 'i')
+  return !fs.statSync(path.join(p, f)).isDirectory() && !filePattern.test(f)
+})
 
 const addTask = (file, operation) =>{
   let materialId = path.dirname(file).split(path.sep)[0]
@@ -126,7 +130,9 @@ sync = async (material) => {
   }
 
   // reset materialId
-  material = null
+  material.includeScreenshots= []
+  material.excludeScreenshots= []
+  material.targetLanguages= new Set()
 }
 
 const zipFiles = async (material) => {
@@ -138,7 +144,7 @@ const zipFiles = async (material) => {
       let languageZipFiles = getZipFile(language, zipFiles)
       languageZipFiles.forEach(async (file)=> await fs.remove(path.resolve(MATERIALS, id, file)))
       let newZip = path.resolve(MATERIALS, id, `index-${language}-${uuidv4()}.tgz`)
-      let files = listFiles(path.resolve(MATERIALS, id)).filter((file)=>!languageZipFiles.includes(file))
+      let files = listFiles(path.resolve(MATERIALS, id))
       tar.c({gzip: true, sync: true, file: newZip, cwd: path.resolve(MATERIALS, id)}, [...files, language])
       console.log(`ZIP GENERATED: ${newZip}`)
     })
@@ -167,7 +173,7 @@ const resizeImage = (file, materialId, size) => {
   }
 }
 
-const getZipFiles = (materialId, language) => {
+const getZipFiles = (materialId) => {
     let filePattern = new RegExp(`^index-..-[0-9A-F]{8}-[0-9A-F]{4}-[4][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}.tgz$`, 'i')
     let files =  fs.readdirSync(path.resolve(MATERIALS, materialId))
     return files.filter((file) => filePattern.test(file))
