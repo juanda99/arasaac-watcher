@@ -65,7 +65,7 @@ if (process.env.NODE_ENV !== 'production') {
 
 // Initialize watcher.
 var watcher = chokidar.watch(MATERIALS, {
-  ignored: [/(^|[\/\\])\../, '**/screenshots_*', /index-[A-z]{2,3}-(\{){0,1}[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}(\}){0,1}.tgz/],
+  ignored: [/(^|[\/\\])\../, '**/screenshots_*/*', /index-[A-z]{2,3}-(\{){0,1}[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}(\}){0,1}.tgz/],
   ignoreInitial: true,
   cwd: MATERIALS
 })
@@ -125,7 +125,7 @@ const addTask = (file, operation) =>{
   if (dir.match(/screenshots$/)|| dir.match(/screenshots\/[A-z]{2,3}$/)) material[`${operation}Screenshots`].push(file)
   // *directories*
   else if ((operation=='dir') && relativeDir.match(/^[A-z]{2,3}$/)) {
-    material.targetLanguages.add(relativeDir)
+    material.languages.add(relativeDir)
     logger.info(`ADD LANGUAGE: ${relativeDir} for material ${materialId}`)
   }
   else if ((operation=='dir') && !path.basename(file).match(/^[A-z]{2,3}$/)) {
@@ -168,7 +168,8 @@ sync = async (material) => {
 
   // zip files 
   try {
-    if (material.targetLanguages.size) zipFiles(material)
+    zipFiles(material)
+    // if (material.targetLanguages.size) zipFiles(material)
   } catch(err) {
     logger.error(err)
   }
@@ -184,18 +185,23 @@ const zipFiles = async (material) => {
   let id = material.materialId
   try {
     let zipFiles = getZipFiles(id)
+    // case no language defined, we take a default one, called 'xx'
+    if (material.targetLanguages.size===0) material.targetLanguages.add('xx')
     material.targetLanguages.forEach( async (language) => {
       let languageZipFiles = getZipFile(language, zipFiles)
       languageZipFiles.forEach(async (file)=> await fs.remove(path.resolve(MATERIALS, id, file)))
       let newZip = path.resolve(MATERIALS, id, `index-${language}-${uuidv4()}.tgz`)
       let files = listFiles(path.resolve(MATERIALS, id))
-      tar.c({gzip: true, sync: true, file: newZip, cwd: path.resolve(MATERIALS, id)}, [...files, language])
+      let copyFiles = (language=='xx') ? [...files] : [...files, language]
+      // if language doesn't exist (xx case) it throws an error
+      tar.c({gzip: true, sync: true, onwarn: prueba, file: newZip, cwd: path.resolve(MATERIALS, id)}, copyFiles)
       logger.info(`ZIP GENERATED: ${newZip}`)
     })
   } catch (error) {
     logger.error(error);
   }
 }
+const prueba = (message, data) => {console.log(message)};
 
 const resizeImage = (file, materialId, size) => {
   let extension = path.extname(file)
