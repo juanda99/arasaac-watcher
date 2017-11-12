@@ -7,6 +7,8 @@ var recursive = require('recursive-readdir')
 var tar = require('tar')
 const _ = require ('lodash')
 var sharp = require('sharp')
+const { createLogger, format, transports } = require('winston')
+const { combine, timestamp, label, printf, colorize } = format
 
 // load environment
 require('dotenv').config()
@@ -19,41 +21,79 @@ const EXCLUDE = 'exclude'
 const SCREENSHOTS_DIR = process.env.SCREENSHOTS_DIR || 'screenshots'
 const MATERIALS = process.env.MATERIALS || '/materials'
 const RESOLUTION = process.env.RESOLUTION || 300
+const NODE_ENV = process.env.NODE_ENV || 'development'
 const TIME = process.env.TIME || 3000
+
+
+// log configuration
+const myFormat = printf(info => {
+  return `${info.timestamp} ${info.level}: ${info.message}`
+})
+
+
+const logger = createLogger({
+  format: combine(
+    colorize(),
+    timestamp(),
+    myFormat
+  ),
+  transports: [
+    //
+    // - Write to all logs with level `info` and below to `combined.log` 
+    // - Write all logs error (and below) to `error.log`.
+    //
+    new transports.File({
+      filename: 'error.log',
+      level: 'error'
+    }),
+    new transports.File({
+      filename: 'combined.log'
+    })
+  ]
+})
+
+
+//
+// If we're not in production then log to the `console` with the format:
+// `${info.level}: ${info.message} JSON.stringify({ ...rest }) `
+// 
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new transports.Console({
+    level: 'debug'
+  }))
+}
 
 // Initialize watcher.
 var watcher = chokidar.watch(MATERIALS, {
-  ignored: [/(^|[\/\\])\../, '**/screenshots_*', /index-..-(\{){0,1}[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}(\}){0,1}.tgz/],
+  ignored: [/(^|[\/\\])\../, '**/screenshots_*', /index-[A-z]{2,3}-(\{){0,1}[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}(\}){0,1}.tgz/],
   ignoreInitial: true,
   cwd: MATERIALS
 })
 
-// Something to use when events are received.
-var log = console.log.bind(console)
+logger.info('ARASAAC WATCHER STARTED')
+logger.info(`It will wait ${parseInt(TIME)/1000} seconds on every material before starting processing it`)
+logger.info('Start scanning...')
+
 // Add event listeners.
 watcher
-  // .on('addDir', path => log(`Directory ${path} has been added`))
   .on('add', (file) => {
-    log(`WATCHER - ADDED FILE: ${path.resolve(MATERIALS, file)}`)
-    addTask(file, 'include')
+    logger.info(`WATCHER - ADDED FILE: ${path.resolve(MATERIALS, file)}`)
+    addTask(file, INCLUDE)
   })
   .on('addDir', (dir) => {
-    log(`ADDED DIRECTORY: ${path.resolve(MATERIALS, dir)}`)
+    logger.info(`ADDED DIRECTORY: ${path.resolve(MATERIALS, dir)}`)
     addTask(dir, 'dir')
   })
   .on('change', (file) => {
-    log(`WATCHER - CHANGED FILE: ${path.resolve(MATERIALS, file)}`)
-    addTask(file, 'include')
+    logger.info(`WATCHER - CHANGED FILE: ${path.resolve(MATERIALS, file)}`)
+    addTask(file, INCLUDE)
   })
   .on('unlink', (file) => {
-    log(`WATCHER - REMOVED FILE: ${path.resolve(MATERIALS, file)}`)
-    addTask(file, 'exclude')
+    logger.info(`WATCHER - REMOVED FILE: ${path.resolve(MATERIALS, file)}`)
+    addTask(file, EXCLUDE)
   })
-  .on('error', error => log(`WATCHER ERROR: ${error}`))
-  .on('ready', () => {
-    log(`*******As there can be many changes on each material, it will wait ${parseInt(TIME)/1000} seconds on every material before starting processing it******`)
-    log('*******Initial scan complete. Ready for changes********')
-  })
+  .on('error', error => logger.error(`WATCHER ERROR: ${error}`))
+  .on('ready', () => logger.info('Initial scan complete, waiting for changes'))
 
 const initMaterial = (materialId) => {
   let languages = dirs(path.resolve(MATERIALS, materialId))
@@ -69,13 +109,14 @@ const initMaterial = (materialId) => {
 const dirs = p => fs.readdirSync(p).filter(f => fs.statSync(path.join(p, f)).isDirectory() && f.match(/^[A-z]{2,3}$/))
 // list files, not directories, not tgz.
 const listFiles = p => fs.readdirSync(p).filter(f => {
-  let filePattern = new RegExp(`^index-..-[0-9A-F]{8}-[0-9A-F]{4}-[4][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}.tgz$`, 'i')
+  let filePattern = new RegExp(`^index-[A-z]{2,3}-[0-9A-F]{8}-[0-9A-F]{4}-[4][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}.tgz$`, 'i')
   return !fs.statSync(path.join(p, f)).isDirectory() && !filePattern.test(f)
 })
 
 const addTask = (file, operation) =>{
   let materialId = path.dirname(file).split(path.sep)[0]
   let dir = path.dirname(path.resolve(MATERIALS, file))
+  let relativeDir = path.basename(file)
   // if not initialized, we do it before pushing data
   if (!materialFiles[materialId]) initMaterial(materialId)
   let material = materialFiles[materialId]
@@ -83,9 +124,12 @@ const addTask = (file, operation) =>{
   // *screenshots*
   if (dir.match(/screenshots$/)|| dir.match(/screenshots\/[A-z]{2,3}$/)) material[`${operation}Screenshots`].push(file)
   // *directories*
-  else if ((operation=='dir') && path.basename(file).match(/^[A-z]{2,3}$/)) material.targetLanguages.add(path.basename(file))
+  else if ((operation=='dir') && relativeDir.match(/^[A-z]{2,3}$/)) {
+    material.targetLanguages.add(relativeDir)
+    logger.info(`ADD LANGUAGE: ${relativeDir} for material ${materialId}`)
+  }
   else if ((operation=='dir') && !path.basename(file).match(/^[A-z]{2,3}$/)) {
-    console.log(`Directory ${file} added, but not executing any action!`)
+    logger.warn(`Directory ${file} added, but not executing any action!`)
     return
   // *material files*
   } else {
@@ -95,7 +139,7 @@ const addTask = (file, operation) =>{
     if (dirName == materialId) material.targetLanguages = material.languages    
     else if (parentDirName == materialId) material.targetLanguages.add(dirName) //dirName should be the language
     else {
-      console.log(`File ${file} added, but not executing any action!`)
+      logger.warn(`File ${file} added, but not executing any action!`)
       return
     }
   }
@@ -115,8 +159,8 @@ sync = async (material) => {
     file.replace('screenshots', `_${RESOLUTION}`)
     // delete the file from screenshots)
     fs.remove(path.resolve(MATERIALS, file), err => {
-      if (err) console.error(err)
-      else console.log(`REMOVE SCREENSHOT: ${file}`)
+      if (err) logger.error(err)
+      else logger.info(`REMOVE SCREENSHOT: ${file}`)
     })
   })
   // add screenshots to screenshots_300
@@ -126,7 +170,7 @@ sync = async (material) => {
   try {
     if (material.targetLanguages.size) zipFiles(material)
   } catch(err) {
-    console.log(err)
+    logger.error(err)
   }
 
   // reset materialId
@@ -146,10 +190,10 @@ const zipFiles = async (material) => {
       let newZip = path.resolve(MATERIALS, id, `index-${language}-${uuidv4()}.tgz`)
       let files = listFiles(path.resolve(MATERIALS, id))
       tar.c({gzip: true, sync: true, file: newZip, cwd: path.resolve(MATERIALS, id)}, [...files, language])
-      console.log(`ZIP GENERATED: ${newZip}`)
+      logger.info(`ZIP GENERATED: ${newZip}`)
     })
   } catch (error) {
-    console.error(error);
+    logger.error(error);
   }
 }
 
@@ -163,18 +207,18 @@ const resizeImage = (file, materialId, size) => {
       sharp(`${MATERIALS}/${file}`)
       .resize(null, parseInt(size))
       .toFile(`${newDir}/${fileName}`, function(err) {
-        if (err) console.log(`Errorr generating screenshotfile:${err}`)
-        else console.log(`GENERATE SCREENSHOT: ${newDir}/${fileName}`)
+        if (err) logger.error(`Error generating screenshotfile:${err}`)
+        else logger.info(`GENERATE SCREENSHOT: ${newDir}/${fileName}`)
       })
     })
     .catch(err => {
-      console.log(`Error creating dir for screenshots:${err}`)
+      logger.error(`Error creating dir for screenshots:${err}`)
     })
   }
 }
 
 const getZipFiles = (materialId) => {
-    let filePattern = new RegExp(`^index-..-[0-9A-F]{8}-[0-9A-F]{4}-[4][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}.tgz$`, 'i')
+    let filePattern = new RegExp(`^index-[A-z]{2,3}-[0-9A-F]{8}-[0-9A-F]{4}-[4][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}.tgz$`, 'i')
     let files =  fs.readdirSync(path.resolve(MATERIALS, materialId))
     return files.filter((file) => filePattern.test(file))
 }
@@ -184,6 +228,6 @@ const getZipFile = (language, zipFiles) => {
     let filePattern = new RegExp(`^index-${language}-[0-9A-F]{8}-[0-9A-F]{4}-[4][0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}.tgz$`, 'i')
     return zipFiles.filter((file) => filePattern.test(file))
   } catch (error) {
-    console.log(error)
+    logger.error(error)
   }
 }
